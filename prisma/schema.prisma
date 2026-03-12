@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// Auth.js required models
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  department    String?
+  role          Role      @default(VIEWER)
+  accounts      Account[]
+  sessions      Session[]
+  ownedSolutions Solution[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================
+// Core domain models
+// ============================================
+
+model Solution {
+  id             String         @id @default(cuid())
+  name           String
+  description    String         @db.Text
+  goal           String?        @db.Text
+  department     String
+  status         SolutionStatus @default(EXPERIMENTAL)
+  solutionType   SolutionType
+  mau            Int            @default(0)
+  jiraTicketId   String?        @unique
+  jiraTicketUrl  String?
+  jiraLastSynced DateTime?
+  featured       Boolean        @default(false)
+  ownerId        String?
+  owner          User?          @relation(fields: [ownerId], references: [id])
+  ownerName      String?
+  ownerEmail     String?
+  tags           Tag[]
+  tools          Tool[]
+  attachments    Attachment[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([department])
+  @@index([status])
+  @@index([solutionType])
+  @@index([mau(sort: Desc)])
+  @@map("solutions")
+}
+
+model Tool {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  url         String?
+  category    String?
+  solutionId  String
+  solution    Solution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@index([solutionId])
+  @@map("tools")
+}
+
+model Attachment {
+  id          String   @id @default(cuid())
+  filename    String
+  storagePath String
+  url         String
+  mimeType    String
+  size        Int
+  solutionId  String
+  solution    Solution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  uploadedBy  String?
+  createdAt   DateTime @default(now())
+
+  @@index([solutionId])
+  @@map("attachments")
+}
+
+model Tag {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  solutions Solution[]
+  createdAt DateTime   @default(now())
+
+  @@map("tags")
+}
+
+model SyncLog {
+  id            String    @id @default(cuid())
+  source        String    @default("jira")
+  status        String
+  message       String?   @db.Text
+  issuesSynced  Int       @default(0)
+  issuesErrored Int       @default(0)
+  triggeredBy   String?
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  @@map("sync_logs")
+}
+
+// ============================================
+// Enums
+// ============================================
+
+enum Role {
+  VIEWER
+  SOLUTION_OWNER
+  ADMIN
+}
+
+enum SolutionStatus {
+  EXPERIMENTAL
+  APPROVED
+  DEPRECATED
+}
+
+enum SolutionType {
+  AGENT
+  COPILOT
+  AUTOMATION
+  ANALYTICS
+}
