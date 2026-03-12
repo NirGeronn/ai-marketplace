@@ -14,6 +14,7 @@ const JIRA_FIELD_GOAL = process.env.JIRA_FIELD_GOAL;
 const JIRA_FIELD_TYPE = process.env.JIRA_FIELD_TYPE;
 const JIRA_FIELD_MAU = process.env.JIRA_FIELD_MAU;
 const JIRA_FIELD_DEPARTMENT = process.env.JIRA_FIELD_DEPARTMENT;
+const JIRA_FIELD_REQUIREMENTS = process.env.JIRA_FIELD_REQUIREMENTS;
 
 function getAuthHeader(): string {
   return "Basic " + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString("base64");
@@ -23,7 +24,7 @@ export async function fetchJiraIssues(
   jql?: string,
   nextPageToken?: string
 ): Promise<JiraSearchResponse> {
-  const query = jql || `project = "${JIRA_PROJECT_KEY}" ORDER BY created DESC`;
+  const query = jql || `project = "${JIRA_PROJECT_KEY}" AND "Request Type" = "Datadog Incident" ORDER BY created DESC`;
 
   const fields = [
     "summary",
@@ -38,6 +39,7 @@ export async function fetchJiraIssues(
     ...(JIRA_FIELD_TYPE ? [JIRA_FIELD_TYPE] : []),
     ...(JIRA_FIELD_MAU ? [JIRA_FIELD_MAU] : []),
     ...(JIRA_FIELD_DEPARTMENT ? [JIRA_FIELD_DEPARTMENT] : []),
+    ...(JIRA_FIELD_REQUIREMENTS ? [JIRA_FIELD_REQUIREMENTS] : []),
   ];
 
   const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/search/jql`, {
@@ -160,6 +162,13 @@ export function mapJiraIssueToSolution(issue: JiraIssue) {
     : null;
   const mau = mauFromField ? parseInt(mauFromField, 10) || 0 : 0;
 
+  const reqFromField = JIRA_FIELD_REQUIREMENTS
+    ? extractCustomFieldValue(fields as Record<string, unknown>, JIRA_FIELD_REQUIREMENTS)
+    : null;
+  const requirements = reqFromField
+    ? reqFromField.split(",").map((r) => r.trim()).filter(Boolean)
+    : [];
+
   return {
     name: fields.summary,
     description: extractPlainText(fields.description),
@@ -173,6 +182,7 @@ export function mapJiraIssueToSolution(issue: JiraIssue) {
     jiraLastSynced: new Date(),
     ownerName: fields.assignee?.displayName || null,
     ownerEmail: fields.assignee?.emailAddress || null,
+    requirements,
     tags: fields.labels.filter(
       (l) => !Object.keys(DEPARTMENT_LABELS).includes(l.toLowerCase())
     ),
@@ -180,33 +190,3 @@ export function mapJiraIssueToSolution(issue: JiraIssue) {
 }
 
 export type MappedSolution = ReturnType<typeof mapJiraIssueToSolution>;
-
-export async function syncAllFromJira() {
-  const results: {
-    synced: number;
-    errored: number;
-    errors: string[];
-    issues: MappedSolution[];
-  } = { synced: 0, errored: 0, errors: [], issues: [] };
-
-  let nextPageToken: string | undefined;
-
-  do {
-    const response = await fetchJiraIssues(undefined, nextPageToken);
-
-    for (const issue of response.issues) {
-      try {
-        const mapped = mapJiraIssueToSolution(issue);
-        results.synced++;
-        results.issues.push(mapped);
-      } catch (err) {
-        results.errored++;
-        results.errors.push(`${issue.key}: ${(err as Error).message}`);
-      }
-    }
-
-    nextPageToken = response.nextPageToken ?? undefined;
-  } while (nextPageToken);
-
-  return results;
-}

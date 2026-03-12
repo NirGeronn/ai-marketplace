@@ -2,32 +2,56 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { fetchJiraIssues, mapJiraIssueToSolution } from "@/lib/jira";
-import { notifySlack } from "@/lib/slack";
+import { startOperation, isAborted } from "@/lib/sync-lock";
 
 export async function POST() {
-  const session = await auth();
-  if (!session?.user || session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!process.env.JIRA_BASE_URL || !process.env.JIRA_EMAIL || !process.env.JIRA_API_TOKEN) {
+    return NextResponse.json(
+      { error: "Jira not configured. Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN." },
+      { status: 400 }
+    );
   }
 
-  const syncLog = await prisma.syncLog.create({
-    data: {
-      source: "jira",
-      status: "running",
-      triggeredBy: session.user.email || "unknown",
-    },
-  });
+  // Abort any previous sync/seed and get our signal
+  const signal = startOperation();
+
+  let triggeredBy = "system";
+  try {
+    const session = await auth();
+    if (session?.user?.email) triggeredBy = session.user.email;
+  } catch {
+    // auth not configured
+  }
 
   let synced = 0;
   let errored = 0;
   const errors: string[] = [];
-  let nextPageToken: string | undefined;
 
   try {
+    // Clear all data — truncate cascade handles FK constraints
+    await prisma.$queryRaw`TRUNCATE TABLE "_SolutionToTag", solutions, tags, sync_logs CASCADE`;
+
+    // Check if we were aborted (user switched back to mock)
+    if (isAborted(signal)) {
+      return NextResponse.json({ status: "aborted", synced: 0 });
+    }
+
+    let nextPageToken: string | undefined;
+
     do {
+      // Check abort before each page fetch
+      if (isAborted(signal)) {
+        return NextResponse.json({ status: "aborted", synced });
+      }
+
       const response = await fetchJiraIssues(undefined, nextPageToken);
 
       for (const issue of response.issues) {
+        // Check abort before each issue insert
+        if (isAborted(signal)) {
+          return NextResponse.json({ status: "aborted", synced });
+        }
+
         try {
           const mapped = mapJiraIssueToSolution(issue);
           const { tags: tagNames, ...solutionData } = mapped;
@@ -65,35 +89,47 @@ export async function POST() {
       nextPageToken = response.nextPageToken ?? undefined;
     } while (nextPageToken);
 
-    await prisma.syncLog.update({
-      where: { id: syncLog.id },
+    // Final abort check before logging
+    if (isAborted(signal)) {
+      return NextResponse.json({ status: "aborted", synced });
+    }
+
+    // Log the sync result
+    await prisma.syncLog.create({
       data: {
+        source: "jira",
         status: errored > 0 ? "partial" : "success",
         message: errors.length > 0 ? errors.join("\n") : null,
         issuesSynced: synced,
         issuesErrored: errored,
+        triggeredBy,
         completedAt: new Date(),
       },
-    });
-
-    await notifySlack({
-      type: "sync_completed",
-      synced,
-      errored,
     });
 
     return NextResponse.json({ status: "success", synced, errored, errors });
   } catch (error) {
-    await prisma.syncLog.update({
-      where: { id: syncLog.id },
-      data: {
-        status: "error",
-        message: (error as Error).message,
-        issuesSynced: synced,
-        issuesErrored: errored,
-        completedAt: new Date(),
-      },
-    });
+    // If aborted, don't log — the DB was likely truncated by the new operation
+    if (isAborted(signal)) {
+      return NextResponse.json({ status: "aborted", synced });
+    }
+
+    // Log failure if possible
+    try {
+      await prisma.syncLog.create({
+        data: {
+          source: "jira",
+          status: "error",
+          message: (error as Error).message,
+          issuesSynced: synced,
+          issuesErrored: errored,
+          triggeredBy,
+          completedAt: new Date(),
+        },
+      });
+    } catch {
+      // DB might be in a bad state, just return the error
+    }
 
     return NextResponse.json(
       { error: "Sync failed", message: (error as Error).message },

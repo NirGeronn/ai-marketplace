@@ -127,6 +127,23 @@ export default async function SolutionDetailPage({
               </div>
             )}
 
+            {solution.requirements.length > 0 && (
+              <div className="card-static p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="material-symbols-outlined text-[20px] text-amber-600">checklist</span>
+                  <h2 className="font-semibold text-slate-900">Requirements</h2>
+                </div>
+                <ul className="space-y-2">
+                  {solution.requirements.map((req, i) => (
+                    <li key={i} className="flex items-center gap-2.5">
+                      <span className="material-symbols-outlined text-[18px] text-amber-500">check_circle</span>
+                      <span className="text-sm text-slate-600">{req}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {solution.tags.length > 0 && (
               <div className="card-static p-6">
                 <div className="flex items-center gap-2 mb-4">

@@ -81,6 +81,7 @@ model Solution {
   jiraTicketId   String?        @unique
   jiraTicketUrl  String?
   jiraLastSynced DateTime?
+  requirements   String[]       @default([])
   featured       Boolean        @default(false)
   ownerId        String?
   owner          User?          @relation(fields: [ownerId], references: [id])
